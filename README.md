@@ -32,6 +32,7 @@ comparison; the field is crowded and no state-of-the-art claim is made.
 |---|---|
 | All packages implemented; 29 unit tests pass (including closed-form metric checks, reproducible sampling, budget stopping, end-to-end study on tiny synthetic images) | yes |
 | Experiments on real photographs | **not run**: DIV2K and the standard test sets were unreachable from the development container, which also has no GPU |
+| GPU / CUDA / mixed-precision code paths | written, **never executed** (the development container has no GPU); CPU paths are what the tests cover |
 | LPIPS / perceptual metrics, transformer-based SR (SwinIR-style) | not implemented |
 | Published numbers | none |
 
