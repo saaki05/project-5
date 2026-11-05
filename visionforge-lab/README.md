@@ -1,14 +1,14 @@
 # visionforge-lab
 
 Benchmark harness for the VisionForge study: **where do regression, adversarial and
-diffusion super-resolution land on the quality / compute plane when trained with the same
-budget, and how do they behave on degradations they were not trained on?**
+diffusion super-resolution land on the quality / compute plane (training cost reported alongside
+quality), and how do they behave on degradations they were not trained on?**
 
 ## What it does
 
 - `run_study` trains bicubic-initialised **EDSR (L1)**, **EDSR + adversarial fine-tuning** and
-  **residual diffusion** from the same patch bank, with identical patch size, batch size and
-  step (and optional wall-clock) budget, then evaluates every system on held-out **test
+  **residual diffusion** from the same patch bank and patch/batch size, with explicit step
+  budgets per family (and an optional wall-clock cap), then evaluates every system on held-out **test
   images** under `bicubic`, `blur_noise` and `jpeg` degradations.
 - Per-image PSNR / SSIM (Y channel, shaved border) with bootstrap confidence intervals and
   paired bootstrap tests against bicubic.
@@ -34,11 +34,21 @@ A CUDA GPU is used automatically (mixed precision for the regression loop).
 ## Status
 
 The code is complete and unit-tested end to end on tiny synthetic images (training, GAN
-fine-tuning, diffusion sampling, evaluation, statistics, report). **No experiment on real
-photographs has been run**: DIV2K and the standard test sets were not reachable from the
-development container, which also has no GPU. This repository therefore contains no
-benchmark numbers; the study is meant to be run on a GPU machine with a dataset you have
-downloaded and have the right to use.
+fine-tuning, diffusion sampling, evaluation, statistics, report) and has been run on real
+data: ×4 super-resolution of SpaceNet 7 satellite mosaics, on CPU, with a split by area
+(`--group-level 2`). Results, including three diffusion variants and the defects they
+revealed, are in `results/satellite/` and summarised in the repository README. CUDA code paths
+have never been executed (no GPU in the development environment). Natural-image benchmarks
+(DIV2K, Set5, ...) were unreachable.
+
+Command used for the satellite run (single CPU thread, about 90 minutes):
+
+```bash
+visionforge-lab study --images <SpaceNet cache> --group-level 2 --min-valid 0.98 --max-side 512 \
+    --scale 4 --steps 1500 --diffusion-steps 4000 --patch 64 --batch 16 --bank 3000 \
+    --features 32 --blocks 6 --diffusion-base 24 --sample-steps 10 --test-max-side 256 \
+    --seed 0 --out results/satellite/study.json
+```
 
 ## Reading the results responsibly
 
