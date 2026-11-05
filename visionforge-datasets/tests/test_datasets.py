@@ -16,7 +16,6 @@ from visionforge_data import (
     split_images,
     synthetic_image,
     verify_manifest,
-    write_manifest,
 )
 from visionforge_data.cli import main
 

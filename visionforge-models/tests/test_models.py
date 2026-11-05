@@ -68,6 +68,7 @@ def test_edsr_output_shape_and_residual_over_bicubic(scale):
 
 
 def test_regression_training_reduces_loss():
+    torch.manual_seed(0)
     net = EDSR(scale=2, features=8, blocks=2)
     hist = train_regression(net, toy_batch, steps=60, lr=2e-3, device=CPU)
     assert hist["steps"] == 60
