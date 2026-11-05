@@ -63,6 +63,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--diffusion-base", type=int, default=32)
     s.add_argument("--diffusion-steps", type=int, default=None,
                    help="training steps for the diffusion model (default: same as --steps)")
+    s.add_argument("--examples-dir", default=None, help="save example output crops here")
+    s.add_argument("--n-examples", type=int, default=3)
+    s.add_argument("--save-models-dir", default=None)
     s.add_argument("--sample-steps", type=int, default=10, help="DDIM sampling steps")
     s.add_argument("--test-max-side", type=int, default=None,
                    help="centre-crop test images to this size (bounds diffusion sampling cost)")
@@ -80,7 +83,8 @@ def main(argv: list[str] | None = None) -> int:
                         bank_size=a.bank, seed=a.seed, out_path=a.out, features=a.features,
                         blocks=a.blocks, groups=groups, diffusion_base=a.diffusion_base,
                         diffusion_steps_sample=a.sample_steps, test_max_side=a.test_max_side,
-                        diffusion_train_steps=a.diffusion_steps)
+                        diffusion_train_steps=a.diffusion_steps, examples_dir=a.examples_dir,
+                        n_examples=a.n_examples, save_models_dir=a.save_models_dir)
         print(render(res))
     else:
         print(render(json.loads(Path(a.results).read_text())))

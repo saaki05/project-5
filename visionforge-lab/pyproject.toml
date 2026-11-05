@@ -14,6 +14,7 @@ dependencies = [
     "visionforge-models>=0.1,<0.2",
     "torch>=2.1",
     "numpy>=1.24",
+    "pillow>=10",
 ]
 
 [project.optional-dependencies]

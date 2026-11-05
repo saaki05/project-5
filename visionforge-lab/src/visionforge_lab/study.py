@@ -50,7 +50,9 @@ def run_study(images: list[np.ndarray], scale: int = 4, steps: int = 2000,
               seed: int = 0, device=None, out_path=None, features: int = 48, blocks: int = 8,
               diffusion_timesteps: int = 1000, diffusion_base: int = 32,
               degradations=DEGRADATIONS, tile: int = 64, groups=None,
-              test_max_side: int | None = None, diffusion_train_steps: int | None = None) -> dict:
+              test_max_side: int | None = None, diffusion_train_steps: int | None = None,
+              examples_dir: str | Path | None = None, n_examples: int = 3,
+              save_models_dir: str | Path | None = None) -> dict:
     device = device or pick_device()
     train_i, val_i, test_i = split_images(len(images), seed=seed, groups=groups)
     if not audit_image_split(train_i, val_i, test_i, groups):
@@ -96,6 +98,14 @@ def run_study(images: list[np.ndarray], scale: int = 4, steps: int = 2000,
     systems[f"residual diffusion (DDIM-{diffusion_steps_sample})"] = (
         B.diffusion_system(ema, scale, device, diffusion_steps_sample, tile, seed), ema, hist_d)
 
+    if examples_dir:
+        _save_examples(examples_dir, systems, test_imgs, scale, degradations, seed, n_examples)
+    if save_models_dir:
+        Path(save_models_dir).mkdir(parents=True, exist_ok=True)
+        for name, (_, model, _) in systems.items():
+            if model is not None:
+                torch.save(model.state_dict(), Path(save_models_dir) / f"{_slug(name)}.pt")
+
     evals: dict[str, dict[str, dict[str, np.ndarray]]] = {}
     for name, (fn, model, hist) in systems.items():
         entry = {"parameters": B.parameters(model),
@@ -121,6 +131,32 @@ def run_study(images: list[np.ndarray], scale: int = 4, steps: int = 2000,
     if out_path:
         Path(out_path).write_text(json.dumps(result, indent=2))
     return result
+
+
+def _slug(name: str) -> str:
+    import re
+
+    return re.sub(r"_+", "_", "".join(c if c.isalnum() else "_" for c in name.lower())).strip("_")
+
+
+def _save_examples(out_dir, systems, test_imgs, scale, degradations, seed, n, crop=128):
+    """Write centre crops of HR, the degraded LR input and every system's output as PNGs."""
+    from visionforge_data import save_image
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for i in range(min(n, len(test_imgs))):
+        hr = B.crop_to_multiple(test_imgs[i], scale)
+        h, w = hr.shape[:2]
+        y, x = max(0, (h - crop) // 2) // scale * scale, max(0, (w - crop) // 2) // scale * scale
+        window = (slice(y, y + crop), slice(x, x + crop))
+        save_image(hr[window], out / f"ex{i}_hr.png")
+        for deg in degradations:
+            lr = B.degrade(hr, scale, deg, seed + i)
+            save_image(lr[y // scale:(y + crop) // scale, x // scale:(x + crop) // scale],
+                       out / f"ex{i}_{deg}_lr.png")
+            for name, (fn, _, _) in systems.items():
+                save_image(fn(lr)[window], out / f"ex{i}_{deg}_{_slug(name)}.png")
 
 
 def load_images(folder: str | Path, limit: int | None = None) -> list[np.ndarray]:

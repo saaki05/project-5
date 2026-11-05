@@ -107,3 +107,18 @@ def test_study_with_groups_never_splits_a_scene(tmp_path):
                     device=torch.device("cpu"), tile=48, degradations=("bicubic",), groups=groups)
     assert res["n_train_images"] + res["n_val_images"] + res["n_test_images"] == 12
     assert res["n_test_images"] % 3 == 0
+
+
+def test_study_saves_example_crops_and_models(tmp_path):
+    images = [synthetic_image(96, s) for s in range(20)]  # 20 images -> 2 test images
+    run_study(images, scale=2, steps=2, patch=32, batch=2, bank_size=8, features=8, blocks=1,
+              diffusion_timesteps=10, diffusion_base=8, diffusion_steps_sample=2,
+              device=torch.device("cpu"), tile=48, degradations=("bicubic", "jpeg"),
+              examples_dir=tmp_path / "ex", n_examples=2, save_models_dir=tmp_path / "m")
+    names = {p.name for p in (tmp_path / "ex").glob("*.png")}
+    assert "ex0_hr.png" in names and "ex1_bicubic_lr.png" in names
+    assert any(n.startswith("ex0_jpeg_edsr_l1") for n in names)
+    assert any(n.startswith("ex0_bicubic_residual_diffusion") for n in names)
+    saved = {p.name for p in (tmp_path / "m").glob("*.pt")}
+    # every learned system gets its own file (the two EDSR variants must not collide)
+    assert {"edsr_l1.pt", "edsr_adversarial.pt"} <= saved and len(saved) == 3

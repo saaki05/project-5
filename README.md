@@ -43,38 +43,49 @@ Data: SpaceNet 7 monthly Planet mosaics (about 4 m per pixel; CC BY-SA 4.0, veri
 spacenet.ai), 30 areas × 3 dates, 80 usable images after dropping cloud-masked ones, split
 **by area** (64 train / 8 validation / 8 test images, no location shared). ×4 super-resolution,
 patch 64, batch 16. Training images centre-cropped to ≤512 px; the 8 test images to 256 px
-(to bound diffusion sampling cost). PSNR/SSIM on luma, border shaved. Full tables and the
-generation commands: [`visionforge-lab/results/satellite/`](visionforge-lab/results/satellite).
+(to bound diffusion sampling cost). PSNR/SSIM on luma, border shaved. Tables and commands:
+[`visionforge-lab/results/satellite/`](visionforge-lab/results/satellite) (the earlier, smaller
+run is kept in `earlier_runs/`).
+
+![PSNR for each system under the clean protocol and two inputs unseen in training](docs/figures/quality_by_degradation.png)
 
 | system (clean bicubic ×4 input) | PSNR [95% CI over images] | SSIM | Δ PSNR vs bicubic [95% CI] | train steps / seconds | latency per 256² output |
 |---|---|---|---|---|---|
 | bicubic | 29.29 [28.32, 30.23] | 0.8263 | — | — | 1 ms |
-| EDSR (L1) | **30.82** [29.77, 31.78] | **0.8685** | +1.53 [+1.32, +1.79] | 1,500 / 270 s | 49 ms |
-| EDSR + adversarial fine-tuning | 30.39 [29.39, 31.33] | 0.8522 | +1.10 [+0.96, +1.24] | 750 / 567 s | 48 ms |
-| residual diffusion (DDIM-10) | 29.97 [29.06, 30.84] | 0.8350 | +0.69 [+0.57, +0.77] | 4,000 / 3,104 s | 2,104 ms |
+| EDSR (L1, 0.52 M params) | **31.16** [30.12, 32.10] | **0.8771** | +1.87 [+1.63, +2.14] | 3,000 / 1,291 s | 61 ms |
+| EDSR + adversarial fine-tuning | 30.16 [29.25, 31.01] | 0.8415 | +0.87 [+0.71, +1.01] | 1,500 / 747 s | 97 ms |
+| residual diffusion (DDIM-10, 0.49 M params) | 30.00 [29.10, 30.86] | 0.8367 | +0.71 [+0.60, +0.79] | 5,000 / 2,249 s | 1,436 ms |
 
 Inputs the models never saw in training (PSNR; Δ vs bicubic in brackets):
 
 | degradation | bicubic | EDSR | EDSR + adversarial | residual diffusion |
 |---|---|---|---|---|
-| blur + noise | 27.97 | 28.96 (+0.98) | 28.72 (+0.74) | 28.59 (+0.61) |
-| JPEG (quality 30) | 25.68 | 25.36 (−0.32) | 25.21 (−0.47) | 25.11 (−0.57) |
+| blur + noise | 27.97 | 29.10 (+1.13) | 28.41 (+0.44) | 28.57 (+0.60) |
+| JPEG (quality 30) | 25.68 | 25.30 (−0.38) | 25.06 (−0.62) | 25.11 (−0.57) |
+
+![Held-out crops: ground truth, bicubic and the three learned models, plus a JPEG input](docs/figures/examples.png)
+
+![Training time against PSNR gain over bicubic](docs/figures/cost_vs_quality.png)
 
 What this supports:
 
 - All three learned models beat bicubic on the clean protocol and on blur+noise, and the
-  plain L1 regression network is best on PSNR/SSIM at a fraction of the cost.
+  plain L1 regression network is best on PSNR/SSIM at a fraction of the cost. A larger EDSR
+  trained twice as long than in the first run (see `earlier_runs/`) gained +0.34 dB over it
+  (31.16 vs 30.82 dB); the adversarial model was *worse* than its earlier version (30.16 vs
+  30.39 dB), so more effort did not help every system.
 - All three are *worse than bicubic* on JPEG-compressed inputs, an artefact type absent
   from training: they treat compression blocks as detail to sharpen. Robustness to unseen
   degradations is the weak point of all three.
 - Adversarial fine-tuning and diffusion cost PSNR/SSIM relative to L1 regression, as the
   perception–distortion trade-off predicts, **but no perceptual metric was measured**, so
-  nothing here shows they look better.
+  nothing here shows they look better. In the example crops the differences between the
+  learned models are small compared with the gap to the ground truth.
 
 Limits you should keep in mind:
 
-- This is **not a compute-matched comparison**. Diffusion was given 4,000 steps (about 11×
-  EDSR's training time) after 1,500 steps proved insufficient; the table reports steps and
+- This is **not a compute-matched comparison**. EDSR got 3,000 steps, the adversarial stage
+  1,500 and diffusion 5,000 (about 1.7× EDSR's training time); the table reports steps and
   seconds so you can judge.
 - Eight test images and one seed. The intervals are over images, and "p = 0.000" in the full
   report only means below the bootstrap's resolution, not a precise probability.
@@ -84,7 +95,10 @@ Limits you should keep in mind:
 ### Defects found and fixed while running on real data
 
 The unit tests passed while the diffusion model was badly wrong; the real data exposed it.
-Same data, same split, `visionforge-lab/results/satellite/ablation_diffusion_variants/`:
+Same data, same split, 4,000-step budget (fixed-gain run: 1,500 steps),
+`visionforge-lab/results/satellite/ablation_diffusion_variants/` and `earlier_runs/`:
+
+![Diffusion variants against bicubic](docs/figures/diffusion_ablation.png)
 
 | diffusion variant | clean PSNR / SSIM | note |
 |---|---|---|
@@ -106,6 +120,15 @@ pip install -e visionforge-datasets -e visionforge-models -e visionforge-lab
 visionforge-lab study --images /path/to/hr_images --scale 4 --steps 20000 --patch 96 \
     --out results/study.json
 visionforge-lab report --results results/study.json
+```
+
+## Regenerating the figures
+
+Every figure in `docs/figures/` is produced from the result files by a script (no number is
+typed by hand). `pip install matplotlib`, then:
+
+```bash
+python scripts/make_figures.py
 ```
 
 ## License
