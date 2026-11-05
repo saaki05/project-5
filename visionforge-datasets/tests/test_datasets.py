@@ -104,3 +104,24 @@ def test_manifest_and_cli(tmp_path, capsys):
         verify_manifest(folder, mf)
     with pytest.raises(FileNotFoundError):
         list_images(tmp_path / "empty_dir_that_does_not_exist")
+
+
+def test_grouped_split_keeps_groups_together():
+    groups = np.repeat(np.arange(10), 3)  # 10 scenes x 3 acquisitions
+    tr, va, te = split_images(30, seed=2, groups=groups)
+    assert audit_image_split(tr, va, te, groups) and len(tr) + len(va) + len(te) == 30
+    for part in (tr, va, te):
+        assert len(part) % 3 == 0  # whole scenes only
+    # an image-level split of the same data would typically break scenes apart
+    t2, v2, e2 = split_images(30, seed=2)
+    assert not audit_image_split(t2, v2, e2, groups)
+    with pytest.raises(ValueError):
+        split_images(30, groups=np.zeros(30))
+    with pytest.raises(ValueError):
+        split_images(30, groups=np.arange(5))
+
+
+def test_split_always_leaves_every_part_non_empty():
+    for n in (3, 4, 5, 7, 10):
+        parts = split_images(n, seed=n)
+        assert all(len(p) >= 1 for p in parts) and sum(len(p) for p in parts) == n

@@ -102,11 +102,24 @@ def train_gan(generator: nn.Module, batch_fn: BatchFn, steps: int, lr: float = 1
 
 def train_diffusion(diffusion: ResidualDiffusion, batch_fn: BatchFn, steps: int,
                     lr: float = 2e-4, device: torch.device | None = None,
-                    max_seconds: float | None = None, seed: int = 0, ema_decay: float = 0.995):
-    """Noise-prediction training; returns ``(history, ema_model)`` for sampling."""
+                    max_seconds: float | None = None, seed: int = 0, ema_decay: float = 0.995,
+                    calibrate_gain: bool = True, calibration_batches: int = 8):
+    """Noise-prediction training; returns ``(history, ema_model)`` for sampling.
+
+    With ``calibrate_gain`` the residual gain is estimated from the first batches (see
+    :meth:`ResidualDiffusion.calibrate_gain`) before the EMA copy is made.
+    """
     device = device or pick_device()
     torch.manual_seed(seed)
     diffusion.to(device).train()
+    if calibrate_gain:
+        hrs, conds = [], []
+        for i in range(calibration_batches):
+            hr, lr_img = (t.to(device) for t in batch_fn(-1 - i))
+            hrs.append(hr)
+            conds.append(F.interpolate(lr_img, size=hr.shape[-2:], mode="bicubic",
+                                       align_corners=False))
+        diffusion.calibrate_gain(torch.cat(hrs), torch.cat(conds))
     ema = EMA(diffusion, ema_decay)
     opt = torch.optim.Adam(diffusion.parameters(), lr=lr)
     losses, start, step = [], time.perf_counter(), 0

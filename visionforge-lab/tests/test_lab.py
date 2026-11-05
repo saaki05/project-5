@@ -77,3 +77,33 @@ def test_study_end_to_end_and_report(tmp_path, capsys):
     assert "Degradation: jpeg" in text and "| bicubic |" in text
     assert main(["report", "--results", str(out)]) == 0
     assert "super-resolution" in capsys.readouterr().out
+
+
+def test_grouped_loader_filters_invalid_and_groups_by_scene(tmp_path):
+    from PIL import Image
+
+    from visionforge_lab.study import load_images_grouped
+
+    rng = np.random.default_rng(0)
+    for scene in ("A", "B"):
+        for k in range(2):
+            d = tmp_path / scene / "images_masked"
+            d.mkdir(parents=True, exist_ok=True)
+            arr = rng.integers(0, 255, (80, 90, 4), dtype=np.uint8)
+            arr[..., 3] = 255
+            if scene == "B" and k == 1:
+                arr[:40, :, 3] = 0  # half invalid -> skipped
+            Image.fromarray(arr, "RGBA").save(d / f"m{k}.tif")
+    images, groups = load_images_grouped(tmp_path, group_level=2, min_valid=0.98, max_side=64)
+    assert len(images) == 3 and sorted(groups) == ["A", "A", "B"]
+    assert images[0].shape == (64, 64, 3) and images[0].dtype == np.float32
+
+
+def test_study_with_groups_never_splits_a_scene(tmp_path):
+    images = [synthetic_image(96, s) for s in range(12)]
+    groups = np.repeat(np.arange(4), 3)
+    res = run_study(images, scale=2, steps=2, patch=32, batch=2, bank_size=8, features=8, blocks=1,
+                    diffusion_timesteps=10, diffusion_base=8, diffusion_steps_sample=2,
+                    device=torch.device("cpu"), tile=48, degradations=("bicubic",), groups=groups)
+    assert res["n_train_images"] + res["n_val_images"] + res["n_test_images"] == 12
+    assert res["n_test_images"] % 3 == 0

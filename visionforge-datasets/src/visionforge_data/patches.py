@@ -9,24 +9,46 @@ import numpy as np
 from visionforge_data.degrade import bicubic_down, crop_to_multiple, degrade
 
 
-def split_images(n: int, fractions=(0.8, 0.1, 0.1), seed: int = 0):
-    """Split image *indices* (never patches) so no image contributes to two splits."""
+def split_images(n: int, fractions=(0.8, 0.1, 0.1), seed: int = 0, groups=None):
+    """Split image *indices* (never patches) so no image contributes to two splits.
+
+    If ``groups`` (one label per image, for example the scene or city an image belongs to) is
+    given, whole groups are assigned to a split, so different acquisitions of the same
+    location can never straddle the train/test boundary.
+    """
     if abs(sum(fractions) - 1) > 1e-9:
         raise ValueError("fractions must sum to 1")
     if n < 3:
         raise ValueError("need at least 3 images")
-    idx = np.random.default_rng(seed).permutation(n)
-    n_tr = max(1, round(fractions[0] * n))
-    n_va = max(1, round(fractions[1] * n))
-    parts = (np.sort(idx[:n_tr]), np.sort(idx[n_tr:n_tr + n_va]), np.sort(idx[n_tr + n_va:]))
-    if any(len(p) == 0 for p in parts):
-        raise ValueError("a split is empty; use more images or different fractions")
-    return parts
+    if groups is None:
+        units = np.arange(n)
+    else:
+        groups = np.asarray(groups)
+        if groups.shape != (n,):
+            raise ValueError("groups must have one entry per image")
+        units = np.unique(groups)
+    if len(units) < 3:
+        raise ValueError("need at least 3 images (or groups)")
+    perm = np.random.default_rng(seed).permutation(len(units))
+    count = len(units)
+    n_tr = min(max(1, round(fractions[0] * count)), count - 2)  # leave room for val and test
+    n_va = min(max(1, round(fractions[1] * count)), count - n_tr - 1)
+    chosen = (units[perm[:n_tr]], units[perm[n_tr:n_tr + n_va]], units[perm[n_tr + n_va:]])
+    if groups is None:
+        return tuple(np.sort(c) for c in chosen)
+    return tuple(np.flatnonzero(np.isin(groups, c)) for c in chosen)
 
 
-def audit_image_split(train: Sequence[int], val: Sequence[int], test: Sequence[int]) -> bool:
-    a, b, c = set(map(int, train)), set(map(int, val)), set(map(int, test))
-    return not (a & b or a & c or b & c)
+def audit_image_split(train: Sequence[int], val: Sequence[int], test: Sequence[int],
+                      groups=None) -> bool:
+    """True if no image (and, when ``groups`` is given, no group) is in two splits."""
+    parts = [set(map(int, p)) for p in (train, val, test)]
+    if any(parts[a] & parts[b] for a, b in ((0, 1), (0, 2), (1, 2))):
+        return False
+    if groups is not None:
+        gs = [{groups[i] for i in p} for p in parts]
+        return not any(gs[a] & gs[b] for a, b in ((0, 1), (0, 2), (1, 2)))
+    return True
 
 
 def sample_pairs(images: Sequence[np.ndarray], n: int, patch: int, scale: int,

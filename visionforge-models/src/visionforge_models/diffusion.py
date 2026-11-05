@@ -96,22 +96,48 @@ class CondUNet(nn.Module):
 
 class ResidualDiffusion(nn.Module):
     def __init__(self, net: CondUNet | None = None, timesteps: int = 1000, schedule="cosine",
-                 residual_gain: float = 4.0) -> None:
+                 residual_gain: float = 4.0, prediction: str = "v") -> None:
         super().__init__()
+        if prediction not in ("eps", "v"):
+            raise ValueError("prediction must be 'eps' or 'v'")
+        self.prediction = prediction
         self.net = net or CondUNet()
         self.timesteps = timesteps
         self.gain = residual_gain  # lifts the small residual towards unit variance
         for k, v in make_schedule(timesteps, schedule).items():
             self.register_buffer(k, v)
 
+    def calibrate_gain(self, hr: Tensor, cond: Tensor, max_gain: float = 200.0) -> float:
+        """Set the gain to 1 / std of the residual so the signal has unit variance.
+
+        A fixed gain only works if the residual is about as large as assumed; real imagery
+        has residual std of a few hundredths, and a network trained against unit-variance
+        noise cannot resolve a signal that small.
+        """
+        std = float((hr - cond).std())
+        self.gain = min(1.0 / max(std, 1e-8), max_gain)
+        return self.gain
+
+    def _x0_eps(self, x_t: Tensor, out: Tensor, ab: Tensor) -> tuple[Tensor, Tensor]:
+        """Recover (x0, eps) from the network output for either parameterisation.
+
+        With ``eps`` prediction the x0 estimate divides by sqrt(abar), which is ~0 at the last
+        step of a cosine schedule and amplifies any error. ``v`` prediction
+        (v = sqrt(abar) eps - sqrt(1 - abar) x0, Salimans & Ho 2022) stays well conditioned.
+        """
+        if self.prediction == "eps":
+            return (x_t - (1 - ab).sqrt() * out) / ab.sqrt(), out
+        return ab.sqrt() * x_t - (1 - ab).sqrt() * out, (1 - ab).sqrt() * x_t + ab.sqrt() * out
+
     def loss(self, hr: Tensor, cond: Tensor) -> Tensor:
-        """Noise-prediction MSE. ``cond`` is the bicubic upsampling of the LR image."""
+        """Denoising loss (MSE on eps or v). ``cond`` is the bicubic upsampling of the LR."""
         x0 = (hr - cond) * self.gain
         t = torch.randint(0, self.timesteps, (hr.shape[0],), device=hr.device)
         eps = torch.randn_like(x0)
         ab = self.abar[t][:, None, None, None]
         x_t = ab.sqrt() * x0 + (1 - ab).sqrt() * eps
-        return F.mse_loss(self.net(x_t, cond, t), eps)
+        target = eps if self.prediction == "eps" else ab.sqrt() * eps - (1 - ab).sqrt() * x0
+        return F.mse_loss(self.net(x_t, cond, t), target)
 
     @torch.no_grad()
     def sample(self, cond: Tensor, steps: int = 10, seed: int | None = 0) -> Tensor:
@@ -125,7 +151,7 @@ class ResidualDiffusion(nn.Module):
             ab = self.abar[t]
             ab_prev = self.abar[ts[i + 1]] if i + 1 < len(ts) else torch.ones((), device=x.device)
             tt = torch.full((cond.shape[0],), int(t), device=cond.device, dtype=torch.long)
-            eps = self.net(x, cond, tt)
-            x0 = ((x - (1 - ab).sqrt() * eps) / ab.sqrt()).clamp(-3.0, 3.0)
+            x0, eps = self._x0_eps(x, self.net(x, cond, tt), ab)
+            x0 = x0.clamp(-4.0, 4.0)
             x = ab_prev.sqrt() * x0 + (1 - ab_prev).sqrt() * eps
         return (cond + x / self.gain).clamp(0.0, 1.0)

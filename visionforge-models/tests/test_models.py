@@ -150,3 +150,52 @@ def test_ema_tracks_weights():
     for _ in range(40):
         ema.update(net)
     assert torch.allclose(ema.model.weight, net.weight, atol=1e-4)
+
+
+def test_gain_calibration_matches_residual_scale_and_helps_small_residuals():
+    torch.manual_seed(0)
+    diff = ResidualDiffusion(CondUNet(base=8, levels=1), timesteps=30, residual_gain=4.0)
+    hr = torch.rand(16, 3, 8, 8)
+    cond = hr + 0.02 * torch.randn_like(hr)  # a small residual, like real imagery
+    gain = diff.calibrate_gain(hr, cond)
+    assert gain == pytest.approx(1 / (hr - cond).std().item(), rel=1e-5) and gain > 30
+    assert ResidualDiffusion(CondUNet(base=8, levels=1)).calibrate_gain(hr, hr) == 200.0  # capped
+
+    def batch(step):
+        g = torch.Generator().manual_seed(abs(step))
+        h = torch.rand(8, 3, 16, 16, generator=g)
+        lr = F.interpolate(h, scale_factor=0.5, mode="bicubic", align_corners=False)
+        return h, lr
+
+    d2 = ResidualDiffusion(CondUNet(base=8, levels=1), timesteps=30)
+    _, ema = train_diffusion(d2, batch, steps=5, device=CPU)
+    assert ema.gain == d2.gain and d2.gain != 4.0  # calibrated, and the EMA copy shares it
+
+
+def test_v_and_eps_parameterisations_are_consistent():
+    diff_v = ResidualDiffusion(CondUNet(base=8, levels=1), timesteps=40, prediction="v")
+    diff_e = ResidualDiffusion(CondUNet(base=8, levels=1), timesteps=40, prediction="eps")
+    x0, eps = torch.randn(4, 3, 8, 8), torch.randn(4, 3, 8, 8)
+    for t in (0, 20, 39):
+        ab = diff_v.abar[t]
+        x_t = ab.sqrt() * x0 + (1 - ab).sqrt() * eps
+        v = ab.sqrt() * eps - (1 - ab).sqrt() * x0
+        rx0, reps = diff_v._x0_eps(x_t, v, ab)  # exact inversion for the true v
+        assert torch.allclose(rx0, x0, atol=1e-4) and torch.allclose(reps, eps, atol=1e-4)
+        ex0, eeps = diff_e._x0_eps(x_t, eps, ab)
+        assert torch.allclose(eeps, eps) and torch.allclose(ex0, x0, atol=1e-2 / ab.sqrt().item())
+    with pytest.raises(ValueError):
+        ResidualDiffusion(prediction="x0")
+
+
+def test_v_prediction_error_is_not_amplified_at_the_last_step():
+    ab = make_schedule(1000, "cosine")["abar"][-1]
+    assert ab.sqrt() < 0.01  # near-zero terminal signal: eps -> x0 divides by this
+    x_t = torch.randn(1000)
+    err = 0.01 * torch.randn(1000)  # a small error in the network output
+    diff = ResidualDiffusion(CondUNet(base=8, levels=1), timesteps=1000, prediction="eps")
+    x0_eps = diff._x0_eps(x_t, x_t * (1 - ab).sqrt().item() + err, ab)[0]
+    diff_v = ResidualDiffusion(CondUNet(base=8, levels=1), timesteps=1000, prediction="v")
+    v_true = ab.sqrt() * (x_t - ab.sqrt() * 0) - (1 - ab).sqrt() * 0  # x0 = 0 case
+    x0_v = diff_v._x0_eps(x_t, v_true + err, ab)[0]
+    assert (x0_v - 0).abs().mean() < 0.1 * (x0_eps - 0).abs().mean()

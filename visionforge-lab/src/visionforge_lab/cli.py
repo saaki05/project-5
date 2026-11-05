@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from visionforge_lab.study import load_images, run_study
+from visionforge_lab.study import load_images, load_images_grouped, run_study
 
 
 def render(res: dict) -> str:
@@ -20,7 +20,7 @@ def render(res: dict) -> str:
     for deg in degs:
         lines += [f"## Degradation: {deg}", "",
                   "| system | PSNR [95% CI] | SSIM [95% CI] | Δ PSNR vs bicubic (p) | params | "
-                  "train s | latency ms |", "|---|---|---|---|---|---|---|"]
+                  "train steps | train s | latency ms |", "|---|---|---|---|---|---|---|---|"]
         for name, s in res["systems"].items():
             q = s["quality"][deg]
             vs = s.get("vs_bicubic", {}).get(deg)
@@ -29,11 +29,12 @@ def render(res: dict) -> str:
                 delta = f"{vs['psnr']['diff']:+.2f} (p={vs['psnr']['p_value']:.3f})"
             params = "—" if s["parameters"] is None else str(s["parameters"])
             train_s = "—" if s["train_seconds"] is None else f"{s['train_seconds']:.0f}"
+            steps_s = "—" if s["train_steps"] is None else str(s["train_steps"])
             lines.append(
                 f"| {name} | {q['psnr']['mean']:.2f} [{q['psnr']['ci_low']:.2f}, "
                 f"{q['psnr']['ci_high']:.2f}] | {q['ssim']['mean']:.4f} "
                 f"[{q['ssim']['ci_low']:.4f}, {q['ssim']['ci_high']:.4f}] | {delta} | "
-                f"{params} | {train_s} | {s['cost']['latency_ms']:.0f} |")
+                f"{params} | {steps_s} | {train_s} | {s['cost']['latency_ms']:.0f} |")
         lines.append("")
     return "\n".join(lines)
 
@@ -51,12 +52,35 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--batch", type=int, default=16)
     s.add_argument("--limit", type=int, default=None, help="use only the first N images")
     s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--group-level", type=int, default=None,
+                   help="group images by the directory this many levels up (e.g. 2 for "
+                        "<scene>/images/<file>) and split by group")
+    s.add_argument("--min-valid", type=float, default=0.98)
+    s.add_argument("--max-side", type=int, default=None, help="centre-crop images to this size")
+    s.add_argument("--features", type=int, default=48)
+    s.add_argument("--blocks", type=int, default=8)
+    s.add_argument("--bank", type=int, default=2000, help="size of the training patch bank")
+    s.add_argument("--diffusion-base", type=int, default=32)
+    s.add_argument("--diffusion-steps", type=int, default=None,
+                   help="training steps for the diffusion model (default: same as --steps)")
+    s.add_argument("--sample-steps", type=int, default=10, help="DDIM sampling steps")
+    s.add_argument("--test-max-side", type=int, default=None,
+                   help="centre-crop test images to this size (bounds diffusion sampling cost)")
     r = sub.add_parser("report")
     r.add_argument("--results", required=True)
     a = ap.parse_args(argv)
     if a.command == "study":
-        res = run_study(load_images(a.images, a.limit), a.scale, a.steps, a.max_seconds, a.patch,
-                        a.batch, seed=a.seed, out_path=a.out)
+        groups = None
+        if a.group_level:
+            images, groups = load_images_grouped(a.images, a.group_level, a.min_valid, a.max_side,
+                                                 a.limit)
+        else:
+            images = load_images(a.images, a.limit)
+        res = run_study(images, a.scale, a.steps, a.max_seconds, a.patch, a.batch,
+                        bank_size=a.bank, seed=a.seed, out_path=a.out, features=a.features,
+                        blocks=a.blocks, groups=groups, diffusion_base=a.diffusion_base,
+                        diffusion_steps_sample=a.sample_steps, test_max_side=a.test_max_side,
+                        diffusion_train_steps=a.diffusion_steps)
         print(render(res))
     else:
         print(render(json.loads(Path(a.results).read_text())))

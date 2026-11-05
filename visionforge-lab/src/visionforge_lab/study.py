@@ -37,7 +37,7 @@ def _nchw(a: np.ndarray) -> torch.Tensor:
 
 def _make_batch_fn(hr_bank: np.ndarray, lr_bank: np.ndarray, batch: int, seed: int, device):
     def fn(step: int):
-        rng = np.random.default_rng(seed * 100003 + step)
+        rng = np.random.default_rng((seed * 100003 + step) % (2**63))
         idx = rng.integers(0, len(hr_bank), batch)
         hr, lr = augment_pairs(hr_bank[idx], lr_bank[idx], rng)
         return _nchw(hr).to(device), _nchw(lr).to(device)
@@ -49,19 +49,28 @@ def run_study(images: list[np.ndarray], scale: int = 4, steps: int = 2000,
               bank_size: int = 2000, gan_steps: int | None = None, diffusion_steps_sample: int = 10,
               seed: int = 0, device=None, out_path=None, features: int = 48, blocks: int = 8,
               diffusion_timesteps: int = 1000, diffusion_base: int = 32,
-              degradations=DEGRADATIONS, tile: int = 64) -> dict:
+              degradations=DEGRADATIONS, tile: int = 64, groups=None,
+              test_max_side: int | None = None, diffusion_train_steps: int | None = None) -> dict:
     device = device or pick_device()
-    train_i, val_i, test_i = split_images(len(images), seed=seed)
-    if not audit_image_split(train_i, val_i, test_i):
+    train_i, val_i, test_i = split_images(len(images), seed=seed, groups=groups)
+    if not audit_image_split(train_i, val_i, test_i, groups):
         raise RuntimeError("image split leaks")
     train_imgs = [images[i] for i in train_i]
     test_imgs = [images[i] for i in test_i]
+    if test_max_side:  # bound evaluation cost: centre-crop test images
+        def centre(img):
+            h, w = img.shape[:2]
+            y, x = max(0, (h - test_max_side) // 2), max(0, (w - test_max_side) // 2)
+            return np.ascontiguousarray(img[y:y + test_max_side, x:x + test_max_side])
+
+        test_imgs = [centre(im) for im in test_imgs]
     hr_bank, lr_bank = sample_pairs(train_imgs, bank_size, patch, scale, "bicubic", seed)
     batch_fn = _make_batch_fn(hr_bank, lr_bank, batch, seed, device)
 
     result: dict = {"scale": scale, "device": str(device), "seed": seed,
                     "n_train_images": len(train_i), "n_val_images": len(val_i),
-                    "n_test_images": len(test_i), "budget": {"steps": steps,
+                    "n_test_images": len(test_i), "test_max_side": test_max_side,
+                    "diffusion_sampling_steps": diffusion_steps_sample, "budget": {"steps": steps,
                                                              "max_seconds": max_seconds},
                     "patch": patch, "batch": batch, "systems": {}}
     probe_lr = B.degrade(B.crop_to_multiple(test_imgs[0], scale), scale, "bicubic")
@@ -81,8 +90,9 @@ def run_study(images: list[np.ndarray], scale: int = 4, steps: int = 2000,
 
     net = CondUNet(3, diffusion_base, levels=2)
     diff = ResidualDiffusion(net, diffusion_timesteps)
-    hist_d, ema = train_diffusion(diff, batch_fn, steps, device=device, max_seconds=max_seconds,
-                                  seed=seed)
+    hist_d, ema = train_diffusion(diff, batch_fn, diffusion_train_steps or steps, device=device,
+                                  max_seconds=max_seconds, seed=seed)
+    result["diffusion_gain"] = float(diff.gain)
     systems[f"residual diffusion (DDIM-{diffusion_steps_sample})"] = (
         B.diffusion_system(ema, scale, device, diffusion_steps_sample, tile, seed), ema, hist_d)
 
@@ -116,3 +126,30 @@ def run_study(images: list[np.ndarray], scale: int = 4, steps: int = 2000,
 def load_images(folder: str | Path, limit: int | None = None) -> list[np.ndarray]:
     paths = list_images(folder)[:limit]
     return [load_image(p) for p in paths]
+
+
+def load_images_grouped(folder: str | Path, group_level: int = 2, min_valid: float = 0.98,
+                        max_side: int | None = None, limit: int | None = None):
+    """Load images with a group label taken from the directory ``group_level`` levels up.
+
+    For ``cache/<scene>/images_masked/<file>.tif`` use ``group_level=2`` to group by scene.
+    Images whose alpha channel marks more than ``1 - min_valid`` of the pixels invalid are
+    skipped; ``max_side`` centre-crops large images to bound compute.
+    """
+    from PIL import Image
+
+    images, groups = [], []
+    for path in list_images(folder):
+        arr = np.asarray(Image.open(path).convert("RGBA"))
+        if (arr[..., 3] > 0).mean() < min_valid:
+            continue
+        img = arr[..., :3].astype(np.float32) / 255.0
+        if max_side:
+            h, w = img.shape[:2]
+            y, x = max(0, (h - max_side) // 2), max(0, (w - max_side) // 2)
+            img = img[y:y + max_side, x:x + max_side]
+        images.append(np.ascontiguousarray(img))
+        groups.append(path.parents[group_level - 1].name)
+        if limit and len(images) >= limit:
+            break
+    return images, groups
